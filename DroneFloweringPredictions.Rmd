@@ -1,0 +1,551 @@
+---
+title: "Predicting Flowering Time from Drone Images"
+author: "Alden Perkins"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Anthesis 2021
+
+First we will predict time of anthesis (male flowering) in the 2021 images. The images were summarized using eight vegetation indices, and the values of those indices at 13 quantiles were taken. 
+
+In addition, the canopy area as a proportion of the plot area was included, and so was the elevation of the vegetation and soil at different quantiles.
+
+Some of these features have no or very little variance. These will be removed by the `tidymodels` preprocessing steps below. We will also impute missing values to the median.
+
+### Feature Engineering
+
+One of the features we can use is the elevation of pixels in the plot, which can give us an estimate of plant height. To create plant height features, I will subtract the elevation from the soil at the 50th percentile from one flight (the `SoilDepth_quantile50_20210619` feature) from the canopy height features (which have `NoSoilDepth` in the column names). Then, I'll get rid of the soil elevation features, which I don't expect to be good predictors of plant height on their own.
+
+I'll also replace infinite values, which probably come from dividing by 0, with NA.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+
+PredictorsFiltered <- read.csv("2021PredictorsMerged.csv") %>%
+  select(-(any_of("X"))) %>%
+  mutate(across(contains("quantile"), ~ifelse(is.infinite(.x), NA, .x))) %>%
+  rename(Surface = SoilDepth_quantile50_20210619) %>%
+  select(-(starts_with("SoilDepth"))) %>%
+  mutate(across(contains("NoSoilDepth"), ~.x - Surface)) %>%
+  select(-Surface)
+
+ncol(PredictorsFiltered)
+```
+
+So there are 1204 total predictors at this point for 2021.
+
+### Add ground truth data
+
+We'll read in the experiment information, which includes the ground truth plant height measurements
+
+
+```{r}
+Trials <- read.csv("2021 Trial Info.csv")
+
+MergedPredictors <- merge(Trials, PredictorsFiltered, by = "ID")
+```
+
+### Calculate Heritability
+
+It would be nice to know the heritability of the drone features as a check to make sure that the plot segmentation was performed correctly. Even features that aren't heritable might be useful since we want to predict flowering time at the level of the plot (with might be influenced by spatial effects, etc.).
+
+This will return some warnings because some of the features have no/little variance.
+
+```{r message=FALSE, warning=FALSE}
+library(asreml)
+devtools::source_url("https://raw.githubusercontent.com/acperkins3/analysis-functions/main/AnalysisFunctions.R")
+
+
+FitASreml <- function(data, trait) {
+  model <- eval(parse(text = paste("asreml(fixed =", trait, "~ 1 , random = ~Pedigree + Replicate, residual = ~idv(units), na.action = na.method(x = 'include', y = 'include'), data = data, trace = FALSE)")))
+  if (model$converge == TRUE) {return(model)}
+  else {return(NULL)}
+}
+
+FitASremlSafely <- safely(FitASreml)
+
+GetGeneticVariance <- function(model) {
+  if (!is.null(model)) {
+    summary(model)$varcomp["Pedigree","component"]
+  }
+}
+
+# SED Function
+
+GetSED <- function(model, data) {
+  if (!is.null(model)) {
+    model <- eval(model$call)
+    return(as.numeric(predict(model, classify = "Pedigree")$avsed))
+  }
+  else {
+    return(NULL)
+  }
+}
+
+GetSEDSafely <- safely(GetSED)
+
+
+MergedPredictorsForASReml <- MergedPredictors %>%
+  filter(Experiment == "PHP02") %>%
+  select(Pedigree, Replicate, contains("quantile50"), contains("objArea")) %>%
+  mutate(Pedigree = as.factor(Pedigree),
+         Replicate = as.factor(Replicate))
+
+H2Table <- data.frame(trait = names(MergedPredictorsForASReml %>% select(-Pedigree, -Replicate))) %>%
+  mutate(model = map(trait, ~FitASremlSafely(MergedPredictorsForASReml, .x))) %>%
+  mutate(model = map(model, ~pluck(.x, "result"))) %>%
+  mutate(Vg = map(model, GetGeneticVariance)) %>%
+  mutate(SED = map(.x = model, ~GetSEDSafely(.x, MergedPredictorsForASReml))) %>%
+  mutate(CullisH2 = map2(.x = SED, .y = Vg, ~GetCullisH2SED(.x, .y))) %>%
+  select(trait, CullisH2)
+
+```
+
+Let's plot heritability by trait
+
+```{r message=FALSE, warning=FALSE}
+library(lubridate)
+
+H2TablePlot <- H2Table %>%
+  mutate(Date = str_sub(trait, -8)) %>%
+  separate(trait, c("trait", NA, NA), sep="_") %>%
+  mutate(day = str_sub(Date, -2)) %>%
+  mutate(month = str_sub(Date, -4, -3)) %>%
+  mutate(StringDate = paste(month, day, "2021", sep="/")) %>%
+  mutate(FormatDate = as.Date(StringDate, "%m/%d/%y")) %>%
+  mutate(CullisH2 = as.numeric(CullisH2)) %>%
+  mutate(trait = case_when(
+    trait == "objArea" ~ "Canopy Area",
+    trait == "NoSoilDepth" ~ "Plant Height",
+    TRUE ~ trait
+  ))
+
+ggplot(H2TablePlot, aes(trait, CullisH2)) +
+  geom_boxplot(fill = "#2c69a9") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1), panel.grid.minor = element_blank(), panel.grid.major = element_blank()) +
+  xlab(NULL) +
+  ylab(bquote(H^2))
+
+ggsave("H2ByTrait2021.png", dpi = 600)
+```
+
+Maybe some of the vegetation indices are more heritable than others. We can also plot heritability over time
+
+
+```{r}
+ggplot(H2TablePlot, aes(FormatDate, CullisH2, color = trait, group = trait)) +
+  geom_point() +
+  xlab("Date") +
+  ylab(bquote(H^2)) +
+  scale_color_discrete("") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1), panel.grid.minor = element_blank(), panel.grid.major = element_blank())
+
+ggsave("H2 Over Time 2021.png", dpi = 600)
+```
+
+Interestingly, many of the vegetation indices are most heritable at flowering in 2021.
+
+### Predict using LASSO
+
+When performing the grid search for the tuning parameter, we may test an amount of regularization that results in a model with just the intercept, so the predictions have no variance. This generates divide by zero errors. That is expected and doesn't impact selection of the best value of $\lambda$.
+
+```{r message=FALSE, warning=FALSE}
+library(tidymodels)
+library(ggpubr)
+
+ThesePredictors <- merge(Trials %>%
+                           filter(Experiment %in% c("PHP02", "MBS5411")) %>% #Experiments
+                           select(ID, AnthesisGDD), PredictorsFiltered, by = "ID") %>%
+  column_to_rownames("ID") %>%
+  filter(!is.na(AnthesisGDD))
+
+Predictors_Split <- initial_split(ThesePredictors, strata = "AnthesisGDD")
+Predictors_train <- training(Predictors_Split)
+Predictors_test <- testing(Predictors_Split)
+Predictors_fold <- vfold_cv(Predictors_train, v = 10)
+
+lasso_recipe <- 
+  recipe(formula = AnthesisGDD ~ ., data = Predictors_train) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>%
+  step_impute_median(all_predictors())
+
+lasso_spec <- 
+  linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet") 
+
+lasso_workflow <- workflow() %>% 
+  add_recipe(lasso_recipe) %>% 
+  add_model(lasso_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+tune_res <- tune_grid(
+  lasso_workflow,
+  resamples = Predictors_fold, 
+  grid = penalty_grid
+)
+
+autoplot(tune_res)
+
+best_penalty <- select_best(tune_res, metric = "rsq")
+
+lasso_final <- finalize_workflow(lasso_workflow, best_penalty)
+
+lasso_final_fit <- fit(lasso_final, data = Predictors_train)
+
+augment(lasso_final_fit, new_data = Predictors_test) %>%
+  rsq(truth = AnthesisGDD, estimate = .pred)
+
+augment(lasso_final_fit, new_data = Predictors_test) %>%
+  ggplot(aes(AnthesisGDD, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5) +
+  stat_cor(method = "spearman", cor.coef.name = "rho",size = 5, aes(label = ..r.label..)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank(), strip.background = element_blank(), strip.placement = "outside") +
+  xlab("Observed GDD Anthesis (ºF)") +
+  ylab("Predicted GDD Anthesis (ºF)")
+
+ggsave("TestSetSpearman2021.png", dpi = 600)
+
+```
+
+So the Spearman rank correlation between the observed and predicted values within the test set is shown above.
+
+Finally, we will make predictions for the plots that don't have ground truth data and save those predictions.
+
+```{r}
+
+Anthesis2021ModelInfo <- list(
+  Predictions = augment(lasso_final_fit, new_data = Predictors_test),
+  Weights = tidy(lasso_final_fit),
+  Performance = augment(lasso_final_fit, new_data = Predictors_test) %>%
+    rsq(truth = AnthesisGDD, estimate = .pred)
+)
+
+save(Anthesis2021ModelInfo, file = "Anthesis2021ModelInfo.Rdata")
+
+# Predict the SSD
+
+SSDData <- merge(Trials %>%
+                           filter(Experiment %in% c("SSD")) %>% #Experiments
+                           select(ID, AnthesisGDD), PredictorsFiltered, by = "ID") %>%
+  filter(ID %!in% c("PlotID_405886", "PlotID_408469")) %>% # Plots with no germination
+  column_to_rownames("ID")
+  
+
+Predictions <- augment(lasso_final_fit, new_data = SSDData) %>%
+  rownames_to_column("ID") %>%
+  mutate(AnthesisGDD = `.pred`) %>%
+  as.data.frame() %>%
+  select(ID, AnthesisGDD)
+
+write_csv(Predictions, "2021 SSD Anthesis Predictions.csv")
+```
+
+
+
+### Rep1 - Rep2 Correlation
+
+Since we have two replications of the genotypes, we can look at the correlation in flowering time between the replicates for the plots that have no ground truth data. Ordinarily I would expect that to be pretty high, but this field had pretty extreme lodging due to a wind storm that impacted some parts of the field more than others, so a low correlation doesn't necessarily mean that the predictions are wrong.
+
+```{r}
+
+SSDDesign <- read.csv("2021 Trial Info.csv") %>%
+  filter(grepl("GEM", Pedigree, fixed=TRUE)) %>%
+  separate(ID, c(NA, "PlotNumber")) %>%
+  mutate(ID = paste0("PlotID_", PlotNumber)) %>%
+  select(ID, Replicate, Pedigree) %>%
+  merge(Predictions, by = "ID")
+
+Rep1 <- SSDDesign %>%
+  filter(Replicate == 1) %>%
+  select(Pedigree, AnthesisGDD_Rep1 = AnthesisGDD)
+
+Rep2 <- SSDDesign %>%
+  filter(Replicate == 2) %>%
+  select(Pedigree, AnthesisGDD_Rep2 = AnthesisGDD)
+
+merge(Rep1, Rep2, by = "Pedigree") %>%
+  ggplot(aes(AnthesisGDD_Rep1, AnthesisGDD_Rep2)) +
+  geom_point(alpha = 0.5, color = "#2c69a9") +
+  geom_abline() +
+  stat_cor(method = "spearman", cor.coef.name = "rho",size = 5, aes(label = ..r.label..)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank(), strip.background = element_blank(), strip.placement = "outside")
+
+ggsave("GDD Anthesis Rep Correlation 2021.png", dpi = 600)
+```
+
+### Spatial Effects
+
+Let's look at the spatial distribution of the values across the field. `Row` and `Col` refer to the layout of trial plots in a grid. Again, we expect some spatial effects on flowering time because the wind storm impacted different parts of the field differently. The heterogeneity of the field may have also impacted flowering time due to water availability or something.
+
+At the same time, localized errors might suggest problems with the plot segmentation.
+
+```{r}
+read.csv("2021 Trial Info.csv") %>%
+  separate(ID, c(NA, "PlotNumber")) %>%
+  mutate(ID = paste0("PlotID_", PlotNumber)) %>%
+  select(ID, Replicate, Pedigree, Row, Col) %>%
+  merge(Predictions, by = "ID") %>%
+  filter(AnthesisGDD > 0) %>%
+  ggplot(aes(Row, Col, fill = AnthesisGDD)) +
+  geom_tile() +
+  scale_fill_gradientn("GDD Anthesis (ºF)", colours=c("#477cb6","#FFFFFFFF","#db0726")) +
+  theme_bw()
+
+ggsave("GDD Anthesis 2021.png", dpi = 600)
+
+```
+
+
+## Anthesis 2022
+
+### Feature Engineering
+
+Like for the 2021 data, I will make the plant height features and then get rid of the soil elevation features.
+
+```{r}
+library(tidyverse)
+
+PredictorsFiltered <- read.csv("2022PredictorsMerged.csv") %>%
+  filter(ID != "PlotID_B") %>%
+  select(-(any_of("X"))) %>%
+  mutate(across(contains("quantile"), ~ifelse(is.infinite(.x), NA, .x))) %>%
+  rename(Surface = SoilDepth_quantile50_20220629) %>%
+  select(-(starts_with("SoilDepth"))) %>%
+  mutate(across(contains("NoSoilDepth"), ~.x - Surface)) %>%
+  select(-Surface)
+
+ncol(PredictorsFiltered)
+```
+
+### Add ground truth data
+
+
+```{r}
+Trials <- read.csv("2022 Trial Info.csv")
+
+MergedPredictors <- merge(Trials, PredictorsFiltered, by = "ID")
+```
+
+### Heritability
+
+This will return warnings since some of the features are not heritable or have no/low variance.
+
+```{r message=FALSE, warning=FALSE}
+MergedPredictorsForASReml <- MergedPredictors %>%
+  filter(Experiment == "PHP02") %>%
+  select(Pedigree, Replicate, contains("quantile50"), contains("objArea")) %>%
+  mutate(Pedigree = as.factor(Pedigree),
+         Replicate = as.factor(Replicate))
+
+H2Table <- data.frame(trait = names(MergedPredictorsForASReml %>% select(-Pedigree, -Replicate))) %>%
+  mutate(model = map(trait, ~FitASremlSafely(MergedPredictorsForASReml, .x))) %>%
+  mutate(model = map(model, ~pluck(.x, "result"))) %>%
+  mutate(Vg = map(model, GetGeneticVariance)) %>%
+  mutate(SED = map(.x = model, ~GetSEDSafely(.x, MergedPredictorsForASReml))) %>%
+  mutate(CullisH2 = map2(.x = SED, .y = Vg, ~GetCullisH2SED(.x, .y))) %>%
+  select(trait, CullisH2)
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(lubridate)
+
+H2TablePlot <- H2Table %>%
+  mutate(Date = str_sub(trait, -8)) %>%
+  separate(trait, c("trait", NA, NA), sep="_") %>%
+  mutate(day = str_sub(Date, -2)) %>%
+  mutate(month = str_sub(Date, -4, -3)) %>%
+  mutate(StringDate = paste(month, day, "2021", sep="/")) %>%
+  mutate(FormatDate = as.Date(StringDate, "%m/%d/%y")) %>%
+  mutate(CullisH2 = as.numeric(CullisH2)) %>%
+  mutate(trait = case_when(
+    trait == "objArea" ~ "Canopy Area",
+    trait == "NoSoilDepth" ~ "Plant Height",
+    TRUE ~ trait
+  ))
+
+ggplot(H2TablePlot, aes(trait, CullisH2)) +
+  geom_boxplot(fill = "#2c69a9") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1), panel.grid.minor = element_blank(), panel.grid.major = element_blank()) +
+  xlab(NULL) +
+  ylab(bquote(H^2))
+
+ggsave("H2ByTrait2022.png", dpi = 600)
+```
+
+
+```{r}
+ggplot(H2TablePlot, aes(FormatDate, CullisH2, color = trait, group = trait)) +
+  geom_point() +
+  xlab("Date") +
+  ylab(bquote(H^2)) +
+  scale_color_discrete("") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1), panel.grid.minor = element_blank(), panel.grid.major = element_blank())
+
+ggsave("H2 Over Time 2022.png", dpi = 600)
+```
+
+### Predict using LASSO
+
+```{r message=FALSE, warning=FALSE}
+ThesePredictors <- merge(Trials %>%
+                           filter(Experiment %in% c("PHP02", "MBS5411", "LH244")) %>% #Experiments
+                           select(ID, AnthesisGDD), PredictorsFiltered, by = "ID") %>%
+  column_to_rownames("ID") %>%
+  filter(!is.na(AnthesisGDD))
+
+Predictors_Split <- initial_split(ThesePredictors, strata = "AnthesisGDD")
+Predictors_train <- training(Predictors_Split)
+Predictors_test <- testing(Predictors_Split)
+Predictors_fold <- vfold_cv(Predictors_train, v = 10)
+
+lasso_recipe <- 
+  recipe(formula = AnthesisGDD ~ ., data = Predictors_train) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>%
+  step_impute_median(all_predictors())
+
+lasso_spec <- 
+  linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet") 
+
+lasso_workflow <- workflow() %>% 
+  add_recipe(lasso_recipe) %>% 
+  add_model(lasso_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+tune_res <- tune_grid(
+  lasso_workflow,
+  resamples = Predictors_fold, 
+  grid = penalty_grid
+)
+
+autoplot(tune_res)
+
+best_penalty <- select_best(tune_res, metric = "rsq")
+
+lasso_final <- finalize_workflow(lasso_workflow, best_penalty)
+
+lasso_final_fit <- fit(lasso_final, data = Predictors_train)
+
+augment(lasso_final_fit, new_data = Predictors_test) %>%
+  rsq(truth = AnthesisGDD, estimate = .pred)
+
+augment(lasso_final_fit, new_data = Predictors_test) %>%
+  ggplot(aes(AnthesisGDD, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5) +
+  stat_cor(method = "spearman", cor.coef.name = "rho",size = 5, aes(label = ..r.label..)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank(), strip.background = element_blank(), strip.placement = "outside") +
+  xlab("Observed GDD Anthesis (ºF)") +
+  ylab("Predicted GDD Anthesis (ºF)")
+
+ggsave("TestSetSpearman2022.png", dpi = 600)
+
+```
+
+And finally we make predictions for plots that had no ground truth data
+
+
+```{r}
+
+Anthesis2022ModelInfo <- list(
+  Predictions = augment(lasso_final_fit, new_data = Predictors_test),
+  Weights = tidy(lasso_final_fit),
+  Performance = augment(lasso_final_fit, new_data = Predictors_test) %>%
+    rsq(truth = AnthesisGDD, estimate = .pred)
+)
+
+save(Anthesis2022ModelInfo, file = "Anthesis2022ModelInfo.Rdata")
+
+# Predict the SSD
+
+SSDData <- merge(Trials %>%
+                           filter(Experiment %in% c("SSD")) %>% #Experiments
+                           select(ID, AnthesisGDD), PredictorsFiltered, by = "ID") %>%
+  column_to_rownames("ID")
+
+Predictions <- augment(lasso_final_fit, new_data = SSDData) %>%
+  rownames_to_column("ID") %>%
+  mutate(AnthesisGDD = `.pred`) %>%
+  as.data.frame() %>%
+  select(ID, AnthesisGDD) %>%
+  filter(ID %!in% c("PlotID_410243", "PlotID_409723", "PlotID_409806", "PlotID_408334", "PlotID_408460", "PlotID_408418", "PlotID_408343", "PlotID_405639")) # Plots with no plants or only a couple
+
+write_csv(Predictions, "2022 SSD Anthesis Predictions.csv")
+```
+
+### Rep1 - Rep2 Correlation
+
+```{r}
+SSDDesign <- read.csv("2022 Trial Info.csv") %>%
+  filter(grepl("GEM", Pedigree, fixed=TRUE)) %>%
+  filter(Experiment == "SSD") %>%
+  separate(ID, c(NA, "PlotNumber")) %>%
+  mutate(ID = paste0("PlotID_", PlotNumber)) %>%
+  select(ID, Replicate, Pedigree) %>%
+  merge(Predictions, by = "ID")
+
+Rep1 <- SSDDesign %>%
+  filter(Replicate == 1) %>%
+  select(Pedigree, AnthesisGDD_Rep1 = AnthesisGDD)
+
+Rep2 <- SSDDesign %>%
+  filter(Replicate == 2) %>%
+  select(Pedigree, AnthesisGDD_Rep2 = AnthesisGDD)
+
+merge(Rep1, Rep2, by = "Pedigree") %>%
+  ggplot(aes(AnthesisGDD_Rep1, AnthesisGDD_Rep2)) +
+  geom_point(alpha = 0.5, color = "#2c69a9") +
+  geom_abline() +
+  stat_cor(method = "spearman", cor.coef.name = "rho",size = 5, aes(label = ..r.label..)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank(), strip.background = element_blank(), strip.placement = "outside")
+
+ggsave("GDD Anthesis Rep Correlation 2022.png", dpi = 600)
+```
+
+### Spatial Effects
+
+```{r}
+read.csv("2022 Trial Info.csv") %>%
+  separate(ID, c(NA, "PlotNumber")) %>%
+  mutate(ID = paste0("PlotID_", PlotNumber)) %>%
+  select(ID, Replicate, Pedigree, Row, Col) %>%
+  merge(Predictions, by = "ID") %>%
+  filter(AnthesisGDD > 0) %>%
+  ggplot(aes(Row, Col, fill = AnthesisGDD)) +
+  geom_tile() +
+  scale_fill_gradientn("GDD Anthesis (ºF)", colours=c("#477cb6","#FFFFFFFF","#db0726")) +
+  theme_bw()
+
+ggsave("GDD Anthesis 2022.png", dpi = 600)
+
+```
+
+These spatial effects surprised me, but I think they may be accurate. Block 1 and block 2 are split around row 41 with block 1 on the left and block 2 on the right. Then, the four subblocks split the blocks in the column direction. The area with the early flowering plots is also the low elevation part of the field, so the early flowering might be driven by more water availability or eariler germination.
+
