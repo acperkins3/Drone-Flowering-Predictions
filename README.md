@@ -10,11 +10,11 @@ In 2021, there were ~1200 plots with ground truth data (which were used for mode
 
 In 2022, there were ~2000 plots with ground truth data (for model training) and ~5000 plots without ground truth data (for prediction).
 
-<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/FieldsOutline.png" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/FieldsOutline.png" /></p>
 
 In 2021, flights were conduted once per week up to flowering and then every other day during the peak of flowering itself.
 
-<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/PlotOverTime.png" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/PlotOverTime.png" /></p>
 
 Flights in 2022 were similar, but there were fewer during the peak of flowering.
 
@@ -26,7 +26,11 @@ RGB images were summarized using eight vegetation indices at 13 quantiles. In ad
 
 The heritability of the features varied over the course of the seasons
 
-
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/H2%20Over%20Time%202021.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
 
 ## Prediction
 
@@ -34,8 +38,58 @@ Preliminary work suggested that LASSO regression worked best. See the `DroneFlow
 
 ## Accuracy
 
-Spearman rank correlations between predicted and observed values in the test sets were high:
+Spearman rank correlations between predicted and observed values in the test sets were high
+
+2021:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/TestSetSpearman2021.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
+
+2022:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/TestSetSpearman2022.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
+
+
 
 Correlation between the two replications was a bit low in 2021. This might be due to the effects of the strong wind storm that lodged many of the plants before flowering.
 
+2021:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/GDD%20Anthesis%20Rep%20Correlation%202021.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
+
+2022:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/GDD%20Anthesis%20Rep%20Correlation%202022.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
+
 Spatial effects were present in both years
+
+2021:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/GDD%20Anthesis%202021.png"
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC" /></p>
+
+2022:
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/Images/GDD%20Anthesis%202022.png" 
+style = "object-fit:fill;
+width: 60%;
+height: auto;
+border: solid 0px #CCC"/></p>
