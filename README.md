@@ -1,15 +1,20 @@
 # Drone Flowering Predictions
 
-## Experiment
-
 This documents predicting the flowering time of maize plots from RBG drone images that were taken throughout the season. 
+
+See the `DroneFloweringPredictions.Rmd` file or the knitted output [here](https://acperkins3.github.io/DroneFloweringPredictions.html) for the code used.
+
+## Experiment
 
 In 2021, there were ~1200 plots with ground truth data (which were used for model training) and ~5000 plots without training data (for which flowering time was predicted).
 
 In 2022, there were ~2000 plots with ground truth data (for model training) and ~5000 plots without ground truth data (for prediction).
 
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/FieldsOutline.png" /></p>
 
 In 2021, flights were conduted once per week up to flowering and then every other day during the peak of flowering itself.
+
+<p align="center"><img src="https://raw.githubusercontent.com/acperkins3/Drone-Flowering-Predictions/main/PlotOverTime.png" /></p>
 
 Flights in 2022 were similar, but there were fewer during the peak of flowering.
 
@@ -19,7 +24,7 @@ RGB images were summarized using eight vegetation indices at 13 quantiles. In ad
 
 ## Heritability
 
-The heritability of the features, calculated as $1 - \frac{\hat{V}_{BLUP Difference}}{2\hat{\sigma}^2_{g}}$ varied over the course of the seasons
+The heritability of the features varied over the course of the seasons
 
 
 
