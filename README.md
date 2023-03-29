@@ -34,7 +34,7 @@ border: solid 0px #CCC" /></p>
 
 ## Prediction
 
-Preliminary work suggested that LASSO regression worked best. See the `DroneFloweringPredictions.Rmd` file or the knitted html for the feature engineering, feature selection, and hyperparameter tuning.
+Preliminary work suggested that LASSO regression worked best. See the `DroneFloweringPredictions.Rmd` file or the [knitted html](https://acperkins3.github.io/DroneFloweringPredictions.html) for the feature engineering, feature selection, and hyperparameter tuning.
 
 ## Accuracy
 
